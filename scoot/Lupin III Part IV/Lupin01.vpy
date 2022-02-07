@@ -22,7 +22,7 @@ denoise_exclude = [(1416, 3500), (30449, 32127)]
 # false positives outweigh actual haloing
 dehalo_exclude = [(32127, 32262)]
 
-aa_include = [(None, 3500), (5124, 5893), (6579, 6612), (8000, 8990), 
+aa_include = [(None, 3500), (5124, 5893), (6579, 6612), (7225, 8990), 
             (9111, 10157), (13389, 13448), (14118, 14261), (14893, 15036),
             (17734, 18112), (18614, 21245), (22523, 22690), (25319, 31993), (32128, None)]
 
@@ -143,3 +143,5 @@ final = depth(ending, 10)
 
 eztrim(gt, trims=(None, 32848), audio_file=f"{filepath}ep01/00002.opus")
 final.set_output()
+
+#vspipe - --filter-time Lupin01.vpy -c y4m | x265 --no-strong-intra-smoothing --y4m --preset veryslow --no-rect --no-amp --no-open-gop --no-cutree --rc-lookahead 120 --ref 6 --bframes 16 --rd 3 --merange 57 --high-tier --range limited --aud --repeat-headers --input-depth 10 --output-depth 10 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs 0 --crqpoffs 0 --qcomp 0.75 --crf 15.75 --no-sao --aq-mode 4 --aq-strength 0.75 --psy-rd 1.75 --psy-rdoq 1.75 --ipratio 1.35 --pbratio 1.25 --deblock 0:0 - --zones 3633,3707,q=7/8374,8990,q=9/28243,29148,q=9/30308,30406,q=10 -o /mnt/HDD1/lupin/ep01/final.hevc
