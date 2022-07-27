@@ -1,5 +1,6 @@
 import vapoursynth as vs
 import vardefunc as vdf
+import awsmfunc as awf
 import havsfunc as haf
 import lvsfunc as lvf
 import G41Fun as G41
@@ -7,9 +8,10 @@ import debandshit
 import vsmask
 
 from vsutil import depth, get_y, iterate, insert_clip, plane, join, split
-from finedehalo import fine_dehalo
+from filter import to_rgbs, to_yuvps, texture_mask
+from vardefunc import Graigasm, AddGrain
 from adptvgrnMod import adptvgrnMod
-from zzfunc.std import LevelsM
+from finedehalo import fine_dehalo
 from acsuite import eztrim
 from vsdpir import DPIR
 
@@ -17,122 +19,117 @@ core = vs.core
 filepath = "/mnt/HDD1/lupin/"
 
 # OP/ED
-denoise_exclude = [(1416, 3500), (30449, 32127)]
+OP = [(1416, 3500)]
+opstart = OP[0][0]
 
-aa_include = [(5262, 5893), (6579, 6612), (7225, 8990), 
-            (9111, 9356), (14893, 15036), (18614, 18655), (22523, 22690), 
-            (30377, 30448)]
+aa_include = [
+    (opstart+800, opstart+940), (5262, 5893), (6579, 6612), 
+    (7225, 8990), (9111, 9356), (14893, 15036), 
+    (18614, 18655), (22523, 22690), (30377, 30448)
+]
 
-stronger_deband_ranges = [(5479, 6620), (7039, 7098), (7615, 7710), 
-        (8566, 8792), (10158, 10217), (12037, 13124), (13389, 13448), 
-        (15109, 15204), (18482, 19513), (19680, 19706), (28243, 29148), (32603, 32656)]
+stronger_deband_ranges = [
+    (5479, 6620), (7039, 7098), (7615, 7710), 
+    (8566, 8792), (10158, 10217), (12037, 13124), 
+    (13389, 13448), (15109, 15204), (18482, 19513), 
+    (19680, 19706), (28243, 29148), (32603, 32656)
+]
 
-dehalo_chroma_range = [(594, 1415), (3501, 5003), (5702, 5947), (7225, 8792), (10158, 11898), (12031, 13500), (15297, None)]
+dpir_ranges = [(32716, None)]
 
-def to_rgbs(clip: vs.VideoNode, matrix: int = 1) -> vs.VideoNode:
-    clip = depth(clip, 32).std.SetFrameProp('_Matrix', intval=matrix)
-    clip = core.resize.Bicubic(clip, format=vs.RGBS)
-    return clip
+denoise_exclude = OP
 
-def to_yuvps(clip: vs.VideoNode, matrix: int = 1) -> vs.VideoNode:
-    return core.resize.Bicubic(clip, format=vs.YUV420P16, matrix=matrix)
-
-def texture_mask(clip, radius, points=[x * 256 for x in (1.75, 2.5, 5, 10)]):
-    ed_gray = core.std.ShufflePlanes(clip, 0, vs.GRAY)
-    rmask = vdf.mask.MinMax(radius).get_mask(get_y(clip), lthr=0, multi=1.00)
-    emask = ed_gray.std.Prewitt()
-    em_hi = emask.std.Binarize(60 * 257, v0=65535, v1=0)
-    em_hi = iterate(em_hi, core.std.Minimum, 5)
-    em_me = emask.std.Binarize(40 * 257, v0=65535, v1=0)
-    em_me = iterate(em_me, core.std.Minimum, 4)
-    em_lo = emask.std.Binarize(20 * 257, v0=65535, v1=0)
-    em_lo = iterate(em_lo, core.std.Minimum, 2)
-    rm_txt = core.std.Expr([rmask, em_hi, em_me, em_lo], 'x y z a min min min')
-    weighted = LevelsM(rm_txt, points=points, levels=[0, 1, 1, 0], xpass=[0, 0], return_expr=0)
-
-    mask = weighted.std.BoxBlur(hradius=8,vradius=8).std.Expr(f'x {65535 * 0.2} - {1 / (1 - 0.2)} *')
-    return mask
+no_crepair = OP + dpir_ranges
 
 # sources
 NCED = core.lsmas.LWLibavSource(f"{filepath}NCED.m2ts")
 nced = depth(NCED, 16)
+nced = nced.knlm.KNLMeansCL(d=3, a=4, h=1, channels='UV', device_type='gpu')
 
 gt = core.lsmas.LWLibavSource(f"{filepath}ep01/00002.m2ts")
 src = core.std.Crop(gt, top=2)[:32848]
 src = depth(src, 16)
 
+# edgefixering
+bb = awf.bbmod(src, top=3, bottom=1, left=2, right=4)
+bb = lvf.rfs(src, bb, (32716, None))
+
 # denoise/deblock
-uv_denoise = core.knlm.KNLMeansCL(src, d=3, a=4, h=0.5, channels='UV', device_type='gpu')
-deblock = haf.SMDegrain(uv_denoise, thSAD=200)
-denoise = lvf.rfs(deblock, uv_denoise, denoise_exclude)
+uv_denoise = core.knlm.KNLMeansCL(bb, d=3, a=4, h=0.5, channels='UV', device_type='gpu')
+uv_denoise = lvf.rfs(bb, uv_denoise, OP + [(30449, 32127)])
+
+dpir = to_yuvps(DPIR(to_rgbs(uv_denoise), strength=20, task="deblock"))
+deblock = lvf.rfs(uv_denoise, dpir, dpir_ranges)
+
+denoise = haf.SMDegrain(deblock, thSAD=200)
+denoise = lvf.denoise.bm3d(deblock, ref=denoise, sigma=1.7, final_args={"profile":"fast"})
+denoise = lvf.rfs(denoise, uv_denoise, denoise_exclude)
+
+crepair = dpir
+crepair = vdf.merge_chroma(denoise, crepair)
+crepair = lvf.rfs(crepair, denoise, no_crepair)
 
 # AA
-transpose = lvf.aa.transpose_aa(denoise, eedi3=True)
-sraa = lvf.sraa(denoise, rfactor=1.5)
+transpose = lvf.aa.transpose_aa(crepair, eedi3=True)
+sraa = lvf.sraa(crepair, rfactor=1.5)
 
-clamp = lvf.aa.clamp_aa(denoise, weak=transpose, strong=sraa, strength=10)
-aa = lvf.rfs(denoise, clamp, aa_include)
-
-# dehalo
-fine_dehalo_args = {"darkstr":0, "brightstr":0.6, "rx":3, "thlimi":30, "thlima":128, "thmi":35, "thma": 100, "lowsens":50, "highsens":50}
-
-dehalo_chroma = join([
-	plane(aa, 0),
-	fine_dehalo(plane(aa, 1), edgemask=vsmask.edge.Sobel(), **fine_dehalo_args),
-	fine_dehalo(plane(aa, 2), edgemask=vsmask.edge.Sobel(), **fine_dehalo_args)
-])
-
-dehalo = lvf.rfs(aa, dehalo_chroma, dehalo_chroma_range)
+clamp = lvf.aa.clamp_aa(crepair, weak=transpose, strong=sraa, strength=10)
+aa = lvf.rfs(crepair, clamp, aa_include)
 
 # deband
-deband = debandshit.dumb3kdb(dehalo, radius=19, threshold=[32, 32, 32], grain=0)
+deband = debandshit.dumb3kdb(aa, radius=19, threshold=[32, 32, 32], grain=0)
 
 detail_mask = lvf.mask.detail_mask(denoise, rad=4, brz_a=0.01, brz_b=0.02)
 texture = texture_mask(denoise, radius=3)
 
-deband = lvf.rfs(deband, denoise, denoise_exclude)
-
-strong_deband = debandshit.dumb3kdb(dehalo, radius=25, threshold=[60, 44, 44])
+strong_deband = debandshit.dumb3kdb(aa, radius=25, threshold=[60, 44, 44])
 deband = lvf.rfs(deband, strong_deband, stronger_deband_ranges)
 
-deband = core.std.MaskedMerge(deband, dehalo, detail_mask)
-deband = core.std.MaskedMerge(deband, dehalo, texture)
+deband = core.std.MaskedMerge(deband, aa, detail_mask)
+deband = core.std.MaskedMerge(deband, aa, texture)
 
 cope = texture_mask(denoise, radius=10)
-sceneflt_deband = core.std.MaskedMerge(deband, dehalo, cope)
+sceneflt_deband = core.std.MaskedMerge(deband, aa, cope)
 deband = lvf.rfs(deband, sceneflt_deband, [(8712, 8792), (18614, 18655)])
 
-grain = adptvgrnMod(deband, strength=0.35, cstrength=0.15, size=1.25, sharp=90, luma_scaling=24)
+grain = Graigasm(
+    thrs=[x << 8 for x in (40, 80, 125, 150)], 
+    strengths=[(0.35, 0.15), (0.3, 0.1), (0.25, 0.05), (0.25, 0)], 
+    sizes=[1.3, 1.2, 1.2, 1.2], sharps=[70, 70, 60, 60], 
+    grainers=[AddGrain(seed=1, constant=False), AddGrain(seed=2, constant=True), AddGrain(seed=3, constant=True), AddGrain(seed=4, constant=True)]
+).graining(deband)
 
 # ED scenefilter
 # Tons of ringing, on text most noticably :|
 
-ed = dehalo[30449:32127]
+ed = denoise[30449:32127]
 
 # make the same length and resolution
 nced = core.std.Crop(nced, top=2)[:1678]
 
-credit_mask = get_y(core.std.MakeDiff(ed, nced))
+dering = to_yuvps(core.w2xnvk.Waifu2x(to_rgbs(ed), noise=3, scale=1, model=2))
+
+credit_mask = core.std.MakeDiff(ed, nced)
+credit_mask = [credit_mask] * 3
+credit_mask = join(credit_mask).resize.Bicubic(format=vs.YUV420P16)
 credit_mask = core.std.Binarize(credit_mask, 38000)
-expanded_mask = iterate(credit_mask, core.std.Maximum, 4)
+expanded_mask = iterate(credit_mask, core.std.Maximum, 8)
 rings = core.std.Expr([credit_mask, expanded_mask], "x y - abs")
 
-dering = to_yuvps(DPIR(to_rgbs(ed), strength=25, task="deblock"))
-dering = adptvgrnMod(dering, strength=0.9, luma_scaling=90, seed=1)
+ed_dehalo = core.std.Expr([ed, nced, rings], ["", "z x y max x ?", "z x y min x ?"])
 
-ending = core.std.MaskedMerge(ed, dering, rings)
+ed_deband = debandshit.dumb3kdb(ed, radius=25, threshold=[48, 48, 48])
+ed_deband = core.std.MaskedMerge(ed_deband, ed_dehalo, detail_mask[30449:32129])
+ed_dering = core.std.MaskedMerge(ed_deband, dering, rings, planes=0) 
 
-noise_diff = core.bilateralgpu.Bilateral(dering, sigma_spatial=2, sigma_color=0.25, radius=2)
-diff = core.std.MakeDiff(ending, noise_diff)
+ending = adptvgrnMod(ed_dering, strength=0.55, cstrength=0, sharp=100, size=1.5, luma_scaling=36, seed=3)
 
-ed_deband = debandshit.dumb3kdb(noise_diff, radius=25, threshold=[64, 32, 32])
-ed_grain = adptvgrnMod(ed_deband, strength=0.9, cstrength=0.1, size=1.5, sharp=125, luma_scaling=90, seed=1)
-ed_deband = core.std.MergeDiff(ed_grain, diff)
-
-ending = insert_clip(grain, ed_deband, 30449)
+ending = insert_clip(grain, ending, 30449)
 
 final = depth(ending, 10)
 
-#eztrim(gt, trims=(None, 32848), audio_file=f"{filepath}ep01/00002.opus")
+eztrim(gt, trims=(None, 32848), audio_file=f"{filepath}ep01/00002.flac")
+
 final.set_output()
-#vspipe --filter-time Lupin01.vpy - -c y4m | x265 --no-strong-intra-smoothing --y4m --preset veryslow --no-open-gop --no-cutree --rd 3 --merange 57 --high-tier --range limited --aud --repeat-headers --input-depth 10 --output-depth 10 --deblock -2:-2 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs -2 --crqpoffs -2 --qcomp 0.7 --rc-lookahead 120 --crf 16 --no-sao --aq-mode 3 --aq-strength 0.7 --psy-rd 2 --psy-rdoq 2.1 --ipratio 1.25 --pbratio 1.15 --zones 31,239,b=0.85/1416,3500,b=0.9/3633,3707,q=7/30449,32127,b=0.9 - -o /mnt/HDD1/lupin/ep01/final.hevc
+
+#vspipe --filter-time Lupin01.vpy - -c y4m | x265 --no-strong-intra-smoothing --y4m --preset veryslow --no-open-gop --no-cutree --rd 3 --merange 57 --high-tier --range limited --aud --repeat-headers --bframes 16 --input-depth 10 --output-depth 10 --deblock -2:-2 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs -2 --crqpoffs -2 --qcomp 0.72 --rc-lookahead 120 --crf 15 --no-sao --aq-mode 3 --aq-strength 0.7 --psy-rd 2 --psy-rdoq 2.15 --ipratio 1.35 --pbratio 1.25 --zones 31,239,b=0.85/1416,3500,b=0.9/3633,3707,q=7 - -o /mnt/HDD1/lupin/ep01/final.hevc
