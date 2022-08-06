@@ -29,19 +29,19 @@ opstart = OP[0][0]
 aa_include = [(opstart+800, opstart+940), (21522, 21881), (22026, 22169)] 
 
 stronger_deband_ranges = [
-	(456, 1175), (3262, 4430), (14648, 15007),
-	(19109, 19240), (20242, 20283), (21391, 21881),
-	(22026, 22169), (22452, 22523), (22668, 23270),
-	(23043, 23114), (23211, 23270), (23427, 23652),
-	(24147, 24230), (32701, 32715)
+	(456, 1175), (3262, 4430), (4608, 5498), 
+	(6486, 8651), (9904, 10226), (14648, 15007),
+	(11013, 11180), (19109, 19240), (20242, 20283), 
+	(21391, 21881), (22026, 22169), (22452, 22523), 
+	(22668, 23270), (23043, 23114), (23211, 23270),
+	(23427, 23652), (24147, 24230), (32701, 32715)
 ]
 
-less_deband_ranges = [(4432, 9031), (9477, 14504)]
-
 strongest_deband_ranges = [
-	(9052, 9475), (15008, 15248), (19505, 19637), 
-	(21873, 21881), (22524, 22667), (22741, 22842), 
-	(23115, 23210), (24879, 25195)
+	(8771, 8860), (9904, 10729), (11181, 12020),
+	(12163, 12258), (12433, 14503), (15008, 15248), 
+	(19505, 19637), (21873, 21881), (22524, 22667), 
+	(22741, 22842), (23115, 23210), (24879, 25195)
 ]
 
 dpir_ranges = [
@@ -81,8 +81,8 @@ uv_denoise = lvf.rfs(
 dpir = to_yuvps(DPIR(to_rgbs(bb), strength=19, task="deblock"))
 deblock = lvf.rfs(uv_denoise, dpir, dpir_ranges)
 
-denoise = haf.SMDegrain(deblock, tr=6, thSAD=180)
-denoise = lvf.denoise.bm3d(deblock, ref=denoise, sigma=1.4, final_args={"profile":"fast"})
+denoise = haf.SMDegrain(deblock, tr=6, thSAD=200)
+denoise = lvf.denoise.bm3d(deblock, ref=denoise, sigma=1.6, final_args={"profile":"fast"})
 
 denoise = lvf.rfs(denoise, uv_denoise, denoise_exclude)
 
@@ -101,20 +101,12 @@ aa = lvf.rfs(crepair, aa, aa_include)
 # deband
 deband = dumb3kdb(aa, radius=19, threshold=[32, 32, 32], grain=0)
 
-weakest_deband = core.average.Mean([
-    dumb3kdb(aa, 8, 10),
-    dumb3kdb(aa, 10, 14),
-    dumb3kdb(aa, 12, 18),
-    dumb3kdb(aa, 16, 20),
-])
-
 strong_deband = dumb3kdb(aa, radius=24, threshold=[44, 44, 44], grain=0)
 
 stronger_deband = dumb3kdb(aa, radius=31, threshold=[64, 64, 64], grain=0)
 
 deband = lvf.rfs(deband, strong_deband, stronger_deband_ranges)
 deband = lvf.rfs(deband, stronger_deband, strongest_deband_ranges)
-deband = lvf.rfs(deband, weakest_deband, less_deband_ranges)
 
 deband = core.std.MaskedMerge(deband, aa, detail_mask)
 deband = core.std.MaskedMerge(deband, aa, texture)
@@ -130,26 +122,22 @@ grain = Graigasm(
 
 ed = denoise[30449:32129]
 
+dering = to_yuvps(core.w2xnvk.Waifu2x(to_rgbs(ed), noise=3, scale=1, model=2))
+
 nced = core.std.Crop(nced, top=2)[:1680]
 nced = core.std.StackVertical([
 	nced,
 	core.std.Crop(ed, top=1078)
 ])
 
-dering = to_yuvps(core.w2xnvk.Waifu2x(to_rgbs(ed), noise=3, scale=1, model=2))
-
-credit_mask = get_y(core.std.MakeDiff(ed, nced))
+credit_mask = core.std.MakeDiff(ed, nced)
+credit_mask = [credit_mask] * 3
+credit_mask = join(credit_mask).resize.Bicubic(format=vs.YUV420P16)
 credit_mask = core.std.Binarize(credit_mask, 38000)
 expanded_mask = iterate(credit_mask, core.std.Maximum, 8)
 rings = core.std.Expr([credit_mask, expanded_mask], "x y - abs")
 
-ed_dehalo = join([
-	get_y(ed),
-	dehalo_alpha(plane(ed, 1), rx=2, darkstr=0.7),
-	dehalo_alpha(plane(ed, 2), rx=2, darkstr=0, brightstr=1.3)
-])
-ed_dehalo = core.std.MaskedMerge(ed, ed_dehalo, credit_mask.std.Maximum().std.Maximum())
-ed_dehalo = lvf.rfs(ed, ed_dehalo, [(157, 420), (1174, None)])
+ed_dehalo = core.std.Expr([ed, nced, rings], ["", "z x y max x ?", "z x y min x ?"])
 
 ed_deband = debandshit.dumb3kdb(ed, radius=25, threshold=[48, 48, 48])
 ed_deband = core.std.MaskedMerge(ed_deband, ed_dehalo, detail_mask[30449:32129])
@@ -160,9 +148,9 @@ ending = insert_clip(grain, ending, 30449)
 
 final = depth(ending, 10)
 
-#eztrim(gt, trims=(None, 32848), audio_file=f"{filepath}ep12/00004.flac")
+eztrim(gt, trims=(None, 32848), audio_file=f"{filepath}ep12/00004.flac")
 from stgfunc import output as o
 
 final.set_output()
 
-#vspipe --filter-time -c y4m Lupin12.vpy - | x265 --no-strong-intra-smoothing --y4m --preset veryslow --bframes 16 --rd 3 --no-open-gop --no-cutree --merange 57 --high-tier --range limited --aud --repeat-headers --input-depth 10 --output-depth 10 --deblock -2:-2 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs -2 --crqpoffs -2 --qcomp 0.73 --rc-lookahead 120 --crf 15 --no-sao --aq-mode 3 --aq-strength 0.77 --psy-rd 2 --psy-rdoq 2.15 --ipratio 1.35 --pbratio 1.25 --zones 1176,3092,b=0.9 - -o /mnt/HDD1/lupin/ep12/final.hevc
+#vspipe --filter-time -c y4m Lupin12.vpy - | x265 --no-strong-intra-smoothing --y4m --preset veryslow --bframes 16 --rd 3 --no-open-gop --no-cutree --merange 57 --high-tier --range limited --aud --repeat-headers --input-depth 10 --output-depth 10 --deblock -2:-2 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs -2 --crqpoffs -2 --qcomp 0.73 --rc-lookahead 120 --crf 15 --no-sao --aq-mode 3 --aq-strength 0.77 --psy-rd 2.1 --psy-rdoq 2.15 --ipratio 1.35 --pbratio 1.25 --zones 1176,3092,b=0.9 - -o /mnt/HDD1/lupin/ep12/final.hevc
