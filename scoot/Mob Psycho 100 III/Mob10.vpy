@@ -184,18 +184,6 @@ grain = vst.rfs(grain, regrained, regrain_ranges)
 
 final = depth(grain, 10)
 
-lossless = core.lsmas.LWLibavSource("/mnt/HDD1/mob/ep10/lossless.mkv")
-lossless = Graigasm(
-    thrs=[x << 8 for x in (50, 75, 125)], 
-    strengths=[(0.25, 0), (0.2, 0), (0.25, 0)], 
-    sizes=[1.3, 1.3, 1.3], sharps=[65, 60, 65],
-    grainers=[AddGrain(seed=1), AddGrain(seed=2, constant=True)]
-).graining(lossless)
-regrained = core.noise.Add(grain, type=0, var=7, seed=69)
-lossless = vst.rfs(lossless, regrained, regrain_ranges)
-lossless = depth(lossless, 10)
-final = vst.rfs(lossless, final, [(5299, 5400), (11631, 11779), (21707, 21974), (opstart+1347, opstart+1483), (opstart+1759, opstart+2031)] + holyfuckitsawful)
-
 from stgfunc import output as o
 
 final.set_output()

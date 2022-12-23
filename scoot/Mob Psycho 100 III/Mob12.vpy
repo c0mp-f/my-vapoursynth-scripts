@@ -32,7 +32,7 @@ def OP_filtering(clip: vs.VideoNode) -> vs.VideoNode:
     denoise = BM3D(clip, ref=denoise, sigma=1.5, radius=2, CUDA=False)
     rgbs = core.resize.Bicubic(denoise, format=vs.RGBS, matrix_in=1)
 
-    deblock = rgbs#DPIR(rgbs, strength=7, task="deblock")
+    deblock = DPIR(rgbs, strength=7, task="deblock")
     deblock2 = DPIR(rgbs, strength=25, task="deblock")
 
     deblock = vst.rfs(deblock, deblock2, [(1347, 1483), (1759, 2031)])
@@ -194,15 +194,9 @@ grain = vst.rfs(grain, regrained, regrain_ranges)
 
 final = depth(grain, 10)
 
-lossless = core.lsmas.LWLibavSource("/mnt/HDD1/mob/ep12/lossless.mkv")
-final = vst.rfs(lossless, final, [(opstart+1347, opstart+1483), (opstart+1759, opstart+2031)])
-
-enc = core.lsmas.LWLibavSource('/mnt/SSD/[scoot] Mob Psycho 100 III [WEB 1080p HEVC]/[scoot] Mob Psycho 100 III - 12 [C6134865].mkv')
-
 from stgfunc import output as o
 
 final.set_output()
-o(enc)
 
 o(src)
 o(bg)

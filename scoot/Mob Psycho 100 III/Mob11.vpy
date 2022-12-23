@@ -197,10 +197,6 @@ grain = vst.rfs(grain, regrained, regrain_ranges)
 
 final = depth(grain, 10)
 
-lossless = core.lsmas.LWLibavSource("/mnt/HDD1/mob/ep11/lossless.mkv")
-
-final = vst.rfs(lossless, final, [(opstart+1347, opstart+1483), (opstart+1759, opstart+2031), (13344, 13522)] + aa_ranges)
-
 from stgfunc import output as o
 
 final.set_output()
