@@ -1,94 +1,91 @@
 import vapoursynth as vs
-import vardefunc as vdf
 import lvsfunc as lvf
 import vstools as vst
-import vsdeband
 
-from vsaa import Eedi3, Eedi3SR, transpose_aa, fine_aa, clamp_aa, upscaled_sraa
+from vsaa import Eedi3, transpose_aa, fine_aa, clamp_aa, upscaled_sraa
 from vstools import depth, join, split, get_y, set_output as o
-from vardefunc import Graigasm, AddGrain
-from vsdeband import Placebo, F3kdb
-from vsdehalo import HQDeringmod
-from vsdenoise import BM3DCuda
+from vsrgtools import lehmer_diff_merge
+
+from vsdeband.noise import multi_graining, MultiGrainerT, AddNoise
+from vsdeband import Placebo, F3kdb, deband_detail_mask
+
+from vsdenoise import BM3DCudaRTC, BM3DCPU, Profile, Prefilter
+from vsdenoise.mvtools import MVTools, MVToolsPresets
+from vsdenoise.ccd import ccd, CCDMode
+from vsdenoise import dpir
 
 core = vs.core
 
 ED = [(32007, 34164)]
 edstart = ED[0][0]
 
-no_den = [(edstart+1698, edstart+1868), (29735, 30080)]
+regrain_ranges = [(edstart+1430, edstart+1469), (edstart+1698, edstart+1868), (29735, 30080)]
+
+dont_merge = [
+    (1949, 2091), (2297, 2402), (18459, 18599)
+] + ED
 
 # sources
-gt = core.lsmas.LWLibavSource("/mnt/HDD1/Videos/Anime/TV/[BDMV][220427][Slow Loop][Vol.02]/BDMV/STREAM/00002.m2ts")
-src = depth(gt, 16)
+src = core.bs.VideoSource("/mnt/HDD1/Videos/Anime/TV/Slow Loop S01 [CR WEB-DL 1080p x264 OPUS] [Sneedentric]/[Sneedentric] Slow Loop - S01E06 [CR WEB-DL 1080p x264 OPUS].mkv")
+src = depth(src, 16)
 
-sraa_ranges = [(src.num_frames - 1, None)]
+src2 = core.bs.VideoSource("/mnt/HDD1/Videos/Anime/TV/[SubsPlease] Slow Loop (01-12) (1080p) [Batch]/[SubsPlease] Slow Loop - 06 (1080p) [431716B4].mkv")[240:]
+src2 = depth(src2, 16)
 
-stronger_deband_ranges = [(src.num_frames - 1, None)]
-
+merge = lehmer_diff_merge([src, src2])
+merge = vst.rfs(merge, src, dont_merge)
 
 # denoising
-deblock = core.dfttest.DFTTest(src, sigma=5)
-deblock = vst.rfs(src, deblock, stronger_deband_ranges)
+dpir_zones = [
+    [regrain_ranges, 6.5]
+]
+deblock = dpir(merge, matrix=1, zones=dpir_zones)
+deblock = vst.rfs(merge, deblock, regrain_ranges)
 
-cden = depth(core.wnnm.WNNM(depth(deblock, 32), sigma=[0, 0.8, 0.8], radius=2), 16)
-denoise = BM3DCuda(cden, sigma=[1, 0, 0], radius=2, matrix=1).clip
-denoise = vst.rfs(denoise, cden, no_den)
+cden = ccd(deblock, thr=4, mode=CCDMode.BICUBIC_LUMA, matrix=1)
+mvtools = MVTools(cden, **MVToolsPresets.SMDE(prefilter=Prefilter.DFTTEST)).denoise(cden, thSAD=(100, 50))
+denoise = BM3DCudaRTC(mvtools, sigma=[1.3, 0.65], radius=2, matrix=1).final(deblock, mvtools)
 
 # AA
-eedi = Eedi3()
-eedi.opencl = True
-
-eedis = Eedi3SR()
-eedis.opencl = True
+eedi = Eedi3(opencl=True)
 
 linemask = core.std.Sobel(get_y(denoise)).std.Binarize(30<<8).std.Inflate()
-sraa = upscaled_sraa(denoise, aafunc=eedis)
+sraa = upscaled_sraa(denoise, aafunc=eedi)
 #sraa = core.std.MaskedMerge(denoise, sraa, linemask)
 
-aat = [transpose_aa(p, eedi) for p in split(denoise)]
-aas = join(aat)
-aa = core.std.MaskedMerge(denoise, aas, linemask)
+aat = transpose_aa(denoise, eedi)
+aa = core.std.MaskedMerge(denoise, aat, linemask)
 
-aa_stronger = clamp_aa(denoise, aas, sraa, 2)
-
-aa = vst.rfs(aa, aa_stronger, sraa_ranges)
-
-aa = vdf.merge_chroma(aa, aas)
-
-# dering 
-blur = core.bilateral.Bilateral(aa, sigmaS=1.75, sigmaR=4/255)
-blur = core.bilateral.Bilateral(aa, ref=blur, sigmaS=0.9, sigmaR=3/255)
-dering = HQDeringmod(aa, smooth=blur, mrad=2, msmooth=1, mthr=30, elast=1)
+aa_stronger = clamp_aa(denoise, aa, sraa, 2)
 
 # deband
-deband = F3kdb(24, 2, 0, use_neo=True).deband(dering)
-
-stronger_deband = Placebo(24, 4, 0, 2).deband(dering)
-
-deband = vst.rfs(deband, stronger_deband, stronger_deband_ranges)
+deband = Placebo(radius=24, thr=2, iterations=2).deband(aa)
 
 preden = denoise.std.BoxBlur()
-detail_mask = lvf.mask.detail_mask(preden, None, 3, 0.007, 0.0085)
+detail_mask = deband_detail_mask(preden, brz=(0.075, 0.075))
 
-deband = core.std.MaskedMerge(deband, dering, detail_mask)
+deband = core.std.MaskedMerge(deband, aa, detail_mask)
 
-grain = Graigasm(
-    thrs=[x << 8 for x in (40, 110, 140)], 
-    strengths=[(0.25, 0), (0.25, 0), (0.3, 0)], 
-    sizes=[1.3, 1.3, 1.3], sharps=[60, 60, 65],
-    grainers=[AddGrain(seed=1), AddGrain(seed=2, constant=True), AddGrain(seed=3, constant=True)]
-).graining(deband)
+grain = AddNoise(strength=(3.0, 0), type=3, size=1.2, luma_scaling=28, dynamic=True, seed=1).grain(deband)
+grain = AddNoise(strength=(2.5, 0), type=3, size=1.2, luma_scaling=8, dynamic=False, seed=2).grain(grain)
+
+# Flashback regraining.
+grain = vst.rfs(grain, AddNoise(strength=(3, 0), size=1.3, type=0, luma_scaling=None, seed=3).grain(deband), regrain_ranges)
 
 final = depth(grain, 10)
-
 final = core.lsmas.LWLibavSource("/mnt/HDD1/slow loop/ep06/lossless.mkv")
 
 final.set_output()
 
-o(gt)
+o(src)
+o(src2)
+o(merge)
 o(denoise)
 o(deband)
 o(detail_mask)
 
-#vspipe -c y4m ~/my-vapoursynth-scripts/9volt/Slow\ Loop/Slow\ Loop\ 06.vpy - | x265 --preset veryslow --bframes 16 --no-strong-intra-smoothing --y4m --rd 3 --no-open-gop --no-sao --no-cutree --merange 57 --high-tier --range limited --aud --repeat-headers --input-depth 10 --output-depth 10 --deblock -2:-2 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs -3 --no-amp --no-rect --crqpoffs -3 --qcomp 0.72 --rc-lookahead 240 --crf 14 --aq-mode 3 --aq-strength 0.7 --psy-rd 2 --psy-rdoq 2 --ipratio 1.3 --pbratio 1.2  - -o /mnt/HDD1/slow\ loop/ep06/final.hevc
+o(cden)
+o(mvtools)
+o(lvf.comparison.stack_planes(denoise))
+
+#vspipe -c y4m ~/my-vapoursynth-scripts/9volt/Slow\ Loop/Slow\ Loop\ 06.vpy - | x265 --preset veryslow --bframes 16 --no-strong-intra-smoothing --y4m --rd 3 --no-open-gop --no-sao --no-cutree --merange 57 --high-tier --range limited --aud --repeat-headers --input-depth 10 --output-depth 10 --deblock -2:-2 --colormatrix 1 --colorprim 1 --transfer 1 --cbqpoffs -3 --no-amp --no-rect --crqpoffs -3 --qcomp 0.72 --rc-lookahead 40 --crf 14 --aq-mode 3 --aq-strength 0.7 --psy-rd 2 --psy-rdoq 2 --ipratio 1.4 --pbratio 1.3  - -o /mnt/HDD1/slow\ loop/ep06/final.hevc
